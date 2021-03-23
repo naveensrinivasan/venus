@@ -38,6 +38,7 @@ type IMessagePool interface {
 	MpoolGetNonce(ctx context.Context, addr address.Address) (uint64, error)
 	MpoolSub(ctx context.Context) (<-chan messagepool.MpoolUpdate, error)
 	SendMsg(ctx context.Context, from, to address.Address, method abi.MethodNum, value, maxFee abi.TokenAmount, params []byte) (cid.Cid, error)
+	BatchGasEstimateMessageGas(ctx context.Context, estimateMessages []*types.EstimateMessage, tsk types.TipSetKey) ([]*types.UnsignedMessage, error)
 	GasEstimateMessageGas(ctx context.Context, msg *types.UnsignedMessage, spec *types.MessageSendSpec, tsk types.TipSetKey) (*types.UnsignedMessage, error)
 	GasEstimateFeeCap(ctx context.Context, msg *types.UnsignedMessage, maxqueueblks int64, tsk types.TipSetKey) (big.Int, error)
 	GasEstimateGasPremium(ctx context.Context, nblocksincl uint64, sender address.Address, gaslimit int64, tsk types.TipSetKey) (big.Int, error)
@@ -335,7 +336,11 @@ func (a *MessagePoolAPI) SendMsg(ctx context.Context, from, to address.Address, 
 }
 
 func (a *MessagePoolAPI) GasEstimateMessageGas(ctx context.Context, msg *types.UnsignedMessage, spec *types.MessageSendSpec, tsk types.TipSetKey) (*types.UnsignedMessage, error) {
-	return a.mp.MPool.GasEstimateMessageGas(ctx, msg, spec, tsk)
+	return a.mp.MPool.GasEstimateMessageGas(ctx, &types.EstimateMessage{Msg: msg, Spec: spec}, tsk)
+}
+
+func (a *MessagePoolAPI) BatchGasEstimateMessageGas(ctx context.Context, estimateMessages []*types.EstimateMessage, tsk types.TipSetKey) ([]*types.UnsignedMessage, error) {
+	return a.mp.MPool.BatchGasEstimateMessageGas(ctx, estimateMessages, tsk)
 }
 
 func (a *MessagePoolAPI) GasEstimateFeeCap(ctx context.Context, msg *types.UnsignedMessage, maxqueueblks int64, tsk types.TipSetKey) (big.Int, error) {

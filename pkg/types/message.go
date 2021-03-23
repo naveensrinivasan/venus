@@ -25,6 +25,11 @@ import (
 
 var DefaultDefaultMaxFee = MustParseFIL("0.007")
 
+type EstimateMessage struct {
+	Msg  *Message
+	Spec *MessageSendSpec
+}
+
 type MessageSendSpec struct {
 	MaxFee abi.TokenAmount
 }
