@@ -2,23 +2,21 @@ package messagepool
 
 import (
 	"context"
-	"math"
-	"math/rand"
-	"sort"
-
 	"github.com/filecoin-project/go-address"
 	"github.com/filecoin-project/go-state-types/abi"
 	"github.com/filecoin-project/go-state-types/big"
 	tbig "github.com/filecoin-project/go-state-types/big"
 	"github.com/filecoin-project/go-state-types/exitcode"
-	"golang.org/x/xerrors"
-
 	"github.com/filecoin-project/venus/pkg/constants"
 	"github.com/filecoin-project/venus/pkg/fork"
 	"github.com/filecoin-project/venus/pkg/specactors/builtin"
 	"github.com/filecoin-project/venus/pkg/specactors/builtin/paych"
 	"github.com/filecoin-project/venus/pkg/types"
 	"github.com/filecoin-project/venus/pkg/vm"
+	"golang.org/x/xerrors"
+	"math"
+	"math/rand"
+	"sort"
 )
 
 const MinGasPremium = 100e3
@@ -247,14 +245,112 @@ func (mp *MessagePool) GasEstimateMessageGas(ctx context.Context, estimateMessag
 	return estimateMessage.Msg, nil
 }
 
-func (mp *MessagePool) BatchGasEstimateMessageGas(ctx context.Context, estimateMessages []*types.EstimateMessage, ts types.TipSetKey) ([]*types.Message, error) {
-	var estimatedMessages []*types.Message
-	for _, estimateMessage := range estimateMessages {
-		msg, err := mp.GasEstimateMessageGas(ctx, estimateMessage, ts)
-		if err != nil {
-			return nil, err
-		}
-		estimatedMessages = append(estimatedMessages, msg)
+func (mp *MessagePool) GasBatchEstimateMessageGas(ctx context.Context, estimateMessages []*types.EstimateMessage, selectCount int, tsk types.TipSetKey) ([]*types.Message, error) {
+	if len(estimateMessages) == 0 {
+		return nil, nil
 	}
-	return estimatedMessages, nil
+	if selectCount == 0 {
+		selectCount = len(estimateMessages)
+	}
+
+	if tsk.IsEmpty() {
+		ts, err := mp.api.ChainHead()
+		if err != nil {
+			return nil, xerrors.Errorf("getting head: %v", err)
+		}
+		tsk = ts.Key()
+	}
+
+	currTs, err := mp.api.ChainTipSet(tsk)
+	if err != nil {
+		return nil, xerrors.Errorf("getting tipset: %w", err)
+	}
+
+	fromA, err := mp.api.StateAccountKey(ctx, estimateMessages[0].Msg.From, currTs)
+	if err != nil {
+		return nil, xerrors.Errorf("getting key address: %w", err)
+	}
+	pending, ts := mp.PendingFor(fromA)
+	priorMsgs := make([]types.ChainMsg, 0, len(pending))
+	for _, m := range pending {
+		priorMsgs = append(priorMsgs, m)
+	}
+
+	var msgs []*types.Message
+	for _, estimateMessage := range estimateMessages {
+		if estimateMessage.Msg.GasLimit == 0 {
+			msg := *estimateMessage.Msg
+			msg.GasLimit = constants.BlockGasLimit
+			msg.GasFeeCap = tbig.NewInt(int64(constants.MinimumBaseFee) + 1)
+			msg.GasPremium = tbig.NewInt(1)
+
+			// Try calling until we find a height with no migration.
+			var res *vm.Ret
+			for {
+				res, err = mp.gp.CallWithGas(ctx, &msg, priorMsgs, ts)
+				if err != fork.ErrExpensiveFork {
+					break
+				}
+
+				tsKey := ts.Parents()
+				ts, err = mp.api.ChainTipSet(tsKey)
+				if err != nil {
+					return msgs, xerrors.Errorf("getting parent tipset: %w", err)
+				}
+			}
+			if err != nil {
+				return msgs, xerrors.Errorf("CallWithGas failed: %w", err)
+			}
+			if res.Receipt.ExitCode != exitcode.Ok {
+				return msgs, xerrors.Errorf("message execution failed: exit %s", res.Receipt.ExitCode)
+			}
+
+			deferProcessMsg := func(gasUsed int64) {
+				estimateMessage.Msg.GasLimit = gasUsed
+			}
+			// Special case for PaymentChannel collect, which is deleting actor
+			act, err := mp.ap.GetActorAt(ctx, ts, msg.To)
+			if err != nil {
+				_ = err
+				// somewhat ignore it as it can happen and we just want to detect
+				// an existing PaymentChannel actor
+				deferProcessMsg(res.Receipt.GasUsed)
+				continue
+			}
+
+			if !builtin.IsPaymentChannelActor(act.Code) {
+				deferProcessMsg(res.Receipt.GasUsed)
+				continue
+			}
+			if msg.Method != paych.Methods.Collect {
+				deferProcessMsg(res.Receipt.GasUsed)
+				continue
+			}
+
+			deferProcessMsg(res.Receipt.GasUsed + 76e3)
+		}
+
+		if estimateMessage.Msg.GasPremium == types.EmptyInt || types.BigCmp(estimateMessage.Msg.GasPremium, types.NewInt(0)) == 0 {
+			gasPremium, err := mp.GasEstimateGasPremium(ctx, 10, estimateMessage.Msg.From, estimateMessage.Msg.GasLimit, types.TipSetKey{})
+			if err != nil {
+				return msgs, xerrors.Errorf("estimating gas price: %w", err)
+			}
+			estimateMessage.Msg.GasPremium = gasPremium
+		}
+
+		if estimateMessage.Msg.GasFeeCap == types.EmptyInt || types.BigCmp(estimateMessage.Msg.GasFeeCap, types.NewInt(0)) == 0 {
+			feeCap, err := mp.GasEstimateFeeCap(ctx, estimateMessage.Msg, 20, types.EmptyTSK)
+			if err != nil {
+				return msgs, xerrors.Errorf("estimating fee cap: %w", err)
+			}
+			estimateMessage.Msg.GasFeeCap = feeCap
+		}
+
+		msgs = append(msgs, estimateMessage.Msg)
+		priorMsgs = append(priorMsgs, estimateMessage.Msg)
+		if len(msgs) > selectCount {
+			break
+		}
+	}
+	return msgs, nil
 }
