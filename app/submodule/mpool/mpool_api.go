@@ -339,8 +339,8 @@ func (a *MessagePoolAPI) GasEstimateMessageGas(ctx context.Context, msg *types.U
 	return a.mp.MPool.GasEstimateMessageGas(ctx, &types.EstimateMessage{Msg: msg, Spec: spec}, tsk)
 }
 
-func (a *MessagePoolAPI) GasBatchEstimateMessageGas(ctx context.Context, estimateMessages []*types.EstimateMessage, selectCount int, tsk types.TipSetKey) ([]*types.UnsignedMessage, error) {
-	return a.mp.MPool.GasBatchEstimateMessageGas(ctx, estimateMessages, selectCount, tsk)
+func (a *MessagePoolAPI) GasBatchEstimateMessageGas(ctx context.Context, estimateMessages []*types.EstimateMessage, selectCount int, fromNonce uint64, tsk types.TipSetKey) ([]*types.EstimateResult, error) {
+	return a.mp.MPool.GasBatchEstimateMessageGas(ctx, estimateMessages, selectCount, fromNonce, tsk)
 }
 
 func (a *MessagePoolAPI) GasEstimateFeeCap(ctx context.Context, msg *types.UnsignedMessage, maxqueueblks int64, tsk types.TipSetKey) (big.Int, error) {
